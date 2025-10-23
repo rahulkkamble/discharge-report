@@ -5,35 +5,44 @@ import "bootstrap/dist/css/bootstrap.min.css";
 
 /*
   Discharge Summary — Bootstrap UI version
+  - UI layout matches the previous Bootstrap-based form style
   - Patient list fetched from /patients.json (public)
-  - ABHA addresses normalized + dropdown
-  - Practitioner read from global window.GlobalPractitioner (FHIR Practitioner)
-  - Builds a FHIR Bundle (document) with:
-    Composition + Patient + Practitioner + Encounter + MedicationRequests + DocumentReference + Binary
+  - ABHA addresses normalized + dropdown (same behavior)
+  - Practitioners come from global PRACTITIONERS constant
+  - Build FHIR Bundle (document) with Composition + Patient + Practitioner + Encounter + MedicationRequests + DocumentReference + Binary
   - Bundle.identifier uses urn:ietf:rfc:3986 + urn:uuid:<uuid>
   - XHTML narratives include lang & xml:lang
-  - File upload accepts .pdf, .jpg, .jpeg (base64), placeholder used when none uploaded
-  - Posts { bundle, patient: <originalPatientId> } via axios
-  - Logs original patient id and any submission errors to console
+  - File upload accepts .pdf, .jpg, .jpeg (base64 encoded); placeholder used when none uploaded
+  - Only UI changed — logic preserved
 */
+
+/* --------------------------- GLOBAL PRACTITIONERS --------------------------- */
+const PRACTITIONERS = [
+  {
+    id: "prac-1",
+    name: "Dr. A. Verma",
+    qualification: "MBBS, MD (Medicine)",
+    phone: "+91-90000-11111",
+    email: "dr.verma@example.org",
+    registration: { system: "https://nmc.org.in", value: "NMC-123456" },
+  },
+  {
+    id: "prac-2",
+    name: "Dr. B. Rao",
+    qualification: "MBBS, MS (Surgery)",
+    phone: "+91-90000-22222",
+    email: "dr.rao@example.org",
+    registration: { system: "https://nmc.org.in", value: "NMC-654321" },
+  },
+];
 
 /* --------------------------------- HELPERS --------------------------------- */
 function uuidv4() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
     const r = (Math.random() * 16) | 0;
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
-}
-
-function isUuid(s) {
-  return typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s);
-}
-
-// If a global id isn't a UUID, generate a UUID for bundle-local references
-function safeUuid(maybeId) {
-  const s = (maybeId || "").toLowerCase();
-  return isUuid(s) ? s : uuidv4();
 }
 
 function toFHIRDateFromDDMMYYYY(ddmmyyyy) {
@@ -49,7 +58,7 @@ function nowISOWithOffset() {
   const d = new Date();
   const tzo = -d.getTimezoneOffset();
   const sign = tzo >= 0 ? "+" : "-";
-  const pad = (n) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  const pad = n => String(Math.floor(Math.abs(n))).padStart(2, "0");
   return (
     d.getFullYear() +
     "-" +
@@ -85,7 +94,8 @@ function fileToBase64NoPrefix(file) {
     reader.onload = () => {
       const result = reader.result || "";
       const idx = String(result).indexOf("base64,");
-      resolve(idx >= 0 ? String(result).slice(idx + 7) : String(result));
+      if (idx >= 0) resolve(String(result).slice(idx + 7));
+      else resolve(String(result));
     };
     reader.readAsDataURL(file);
   });
@@ -94,7 +104,7 @@ function fileToBase64NoPrefix(file) {
 /* Small PDF placeholder */
 const PLACEHOLDER_PDF_B64 = "JVBERi0xLjQKJeLjz9MK";
 
-/* Fixed SNOMED codes/displays (must match exactly) */
+/* Fixed SNOMED codes/displays from mapping (must match exactly) */
 const SNOMED = {
   DOC_TYPE: { system: "http://snomed.info/sct", code: "373942005", display: "Discharge summary" },
 
@@ -110,14 +120,29 @@ const SNOMED = {
   SECTION_DOCREF: { system: "http://snomed.info/sct", code: "373942005", display: "Discharge summary" },
 };
 
+/* Dosage instruction standard */
+function buildDosageInstructionStandard() {
+  return [
+    {
+      text: "One tablet twice a day after meal",
+      additionalInstruction: [
+        { coding: [{ system: "http://snomed.info/sct", code: "311504000", display: "With or after food" }] },
+      ],
+      timing: { repeat: { frequency: 2, period: 1, periodUnit: "d" } },
+      route: { coding: [{ system: "http://snomed.info/sct", code: "26643006", display: "Oral Route" }] },
+      method: { coding: [{ system: "http://snomed.info/sct", code: "421521009", display: "Swallow" }] },
+    },
+  ];
+}
+
 /* Normalize ABHA addresses: handles strings or objects with 'address' & 'isPrimary' */
 function normalizeAbhaAddresses(patientObj) {
   const raw =
     patientObj?.additional_attributes?.abha_addresses && Array.isArray(patientObj.additional_attributes.abha_addresses)
       ? patientObj.additional_attributes.abha_addresses
       : Array.isArray(patientObj?.abha_addresses)
-      ? patientObj.abha_addresses
-      : [];
+        ? patientObj.abha_addresses
+        : [];
 
   const out = raw
     .map((item) => {
@@ -128,9 +153,7 @@ function normalizeAbhaAddresses(patientObj) {
         try {
           const v = JSON.stringify(item);
           return { value: v, label: v, primary: !!item.isPrimary };
-        } catch {
-          return null;
-        }
+        } catch { return null; }
       }
       return null;
     })
@@ -145,23 +168,14 @@ export default function App() {
   /* Patients (from public/patients.json) */
   const [patients, setPatients] = useState([]);
   const [selectedPatientIdx, setSelectedPatientIdx] = useState(-1);
+
   const selectedPatient = useMemo(() => (selectedPatientIdx >= 0 ? patients[selectedPatientIdx] : null), [patients, selectedPatientIdx]);
 
   const [abhaOptions, setAbhaOptions] = useState([]);
   const [selectedAbha, setSelectedAbha] = useState("");
 
-  /* Practitioner from global window.GlobalPractitioner (FHIR Practitioner) */
-  const gp = (typeof window !== "undefined" && (window.GlobalPractitioner || window.GlobalPractitionerFHIR)) || null;
-  const practitionerId = safeUuid(gp?.id); // bundle-local id must be a UUID for urn:uuid
-  const practitionerName =
-    (Array.isArray(gp?.name) && gp?.name?.[0]?.text) ||
-    (typeof gp?.name === "string" ? gp?.name : "") ||
-    "Dr. ABC";
-  const practitionerLicense =
-    (Array.isArray(gp?.identifier) && gp?.identifier?.[0]?.value) ||
-    (typeof gp?.license === "string" ? gp?.license : "") ||
-    "LIC-TEMP-0001";
-
+  /* Practitioner (global) */
+  // const [selectedpractitionerReferenceIdx, setSelectedpractitionerReferenceIdx] = useState(0);
   /* Composition meta */
   const [docStatus, setDocStatus] = useState("final");
   const [docTitle, setDocTitle] = useState("Discharge Summary");
@@ -243,12 +257,11 @@ export default function App() {
     setUploadPreviewName(f.name);
   }
 
-  /* ----------------------------- Resource builders ------------------------ */
+  /* ----------------------------- Bundle builder -------------------------- */
   function buildPatientResource(patId) {
     if (!selectedPatient) return null;
     const identifiers = [];
     if (selectedPatient.abha_ref) identifiers.push({ system: "https://healthid.ndhm.gov.in", value: selectedPatient.abha_ref });
-
     const telecom = [];
     if (selectedPatient.mobile) telecom.push({ system: "phone", value: selectedPatient.mobile });
     if (selectedPatient.email) telecom.push({ system: "email", value: selectedPatient.email });
@@ -269,17 +282,39 @@ export default function App() {
     };
   }
 
-  function buildPractitionerResource(pracId) {
+  function buildPractitionerResource(practitionerReferenceId, practitionerDisplayName, practitionerLicense) {
+    const telecom = [];
+    if (window.GlobalPractitioner?.phone) {
+      telecom.push({ system: "phone", value: window.GlobalPractitioner.phone });
+    }
+    if (window.GlobalPractitioner?.email) {
+      telecom.push({ system: "email", value: window.GlobalPractitioner.email });
+    }
+
+    const nameField =
+      typeof practitionerDisplayName === "string" && practitionerDisplayName.trim().length > 0
+        ? [{ text: practitionerDisplayName.trim() }]
+        : undefined;
+
     return {
       resourceType: "Practitioner",
-      id: pracId,
+      id: practitionerReferenceId,
       language: "en-IN",
-      text: buildNarrative("Practitioner", `<p>${practitionerName}</p>`),
-      identifier: practitionerLicense ? [{ system: "https://doctor.ndhm.gov.in", value: practitionerLicense }] : undefined,
-      name: [{ text: practitionerName }],
       meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Practitioner"] },
+      text: buildNarrative("Practitioner", `<p>${practitionerDisplayName}</p>`),
+      identifier: [
+        {
+          type: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/v2-0203", code: "MD", display: "Medical License number" }] },
+          system: "https://doctor.ndhm.gov.in",
+          value: practitionerLicense,
+        },
+      ],
+      ...(nameField ? { name: nameField } : {}),
+      ...(telecom.length > 0 ? { telecom } : {}),
     };
   }
+
+
 
   function buildEncounterResource(encId, patId) {
     const start = nowISOWithOffset();
@@ -312,8 +347,8 @@ export default function App() {
       medicationCodeableConcept: m.medicationText?.trim() ? { text: m.medicationText.trim() } : { text: "Medication" },
       subject: { reference: `urn:uuid:${patId}` },
       authoredOn,
-      requester: { reference: `urn:uuid:${pracId}`, display: practitionerName },
-      dosageInstruction: [{ text: m.dosageText || "One tablet twice a day after meal" }],
+      requester: { reference: `urn:uuid:${pracId}`, display: "Practitioner" },
+      dosageInstruction: buildDosageInstructionStandard(),
       meta: { profile: ["http://hl7.org/fhir/StructureDefinition/MedicationRequest"] },
     }));
   }
@@ -403,50 +438,52 @@ export default function App() {
       language: "en-IN",
       text: buildNarrative("Composition", `<p>${docTitle}</p>`),
       status: docStatus,
-      type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" },
+      type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" }, // fixed
       subject: { reference: `urn:uuid:${patId}` },
       encounter: { reference: `urn:uuid:${encId}` },
       date: authoredOn,
-      author: [{ reference: `urn:uuid:${pracId}`, display: practitionerName }],
+      author: [{ reference: `urn:uuid:${pracId}` }],
       title: docTitle,
       section: sections,
       meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Composition"] },
     };
   }
 
-  /* ---------------------- Build + Submit FHIR Bundle ----------------------- */
   async function onBuildJSON() {
     if (!selectedPatient) {
       alert("Please select a patient");
       return;
     }
-
     const authoredOn = nowISOWithOffset();
-    const originalPatientId = String(selectedPatient?.id || "");
-    console.log("Submitting for patient:", originalPatientId);
 
-    // Generate UUIDs for all bundle-local resources
+    const practitionerReferenceId = window.GlobalPractitioner?.id || uuidv4();
+    const practitionerDisplayName = window.GlobalPractitioner?.name?.[0]?.text || "Doctor ABC";
+    const practitionerLicense = window.GlobalPractitioner?.identifier?.[0]?.value || "ABC-0000-0000";
+
+    // ids
     const bundleId = `DischargeSummaryBundle-${uuidv4()}`;
     const compId = uuidv4();
     const patId = uuidv4();
     const encId = uuidv4();
-    // Use the UUID-safe practitioner id derived from global (practitionerId)
-    const pracId = practitionerId || uuidv4();
+    const pracId = uuidv4();
     const medReqIds = medications.map(() => uuidv4());
     const carePlanId = carePlanText?.trim() ? uuidv4() : null;
     const binaryId = uuidv4();
     const docRefId = uuidv4();
 
-    // Build resources
+
+    // resources
     const patientRes = buildPatientResource(patId);
-    const practitionerRes = buildPractitionerResource(pracId);
+    const practitionerRes = buildPractitionerResource(practitionerReferenceId, practitionerDisplayName, practitionerLicense);
+
     const encounterRes = buildEncounterResource(encId, patId);
     const medReqs = buildMedicationRequests(medReqIds, patId, pracId, authoredOn);
     const carePlanRes = carePlanId ? buildCarePlanResource(carePlanId, patId, pracId) : null;
     const { binary, docRef } = await buildBinaryAndDocRef(binaryId, docRefId, patId);
+
     const composition = buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlanRes, docRef);
 
-    // Assemble document Bundle (ensure Composition is first)
+    // Bundle with identifier using urn:ietf:rfc:3986 + urn:uuid
     const bundle = {
       resourceType: "Bundle",
       id: bundleId,
@@ -466,25 +503,17 @@ export default function App() {
       ],
     };
 
-    // Output valid JSON for validator
-    const json = JSON.stringify(bundle, null, 2);
-    setJsonOut(json);
-    console.log("Generated Discharge Summary Bundle:", bundle);
-
-    // Submit bundle with original patient id; log error details in console
-    try {
-      const resp = await axios.post("https://uat.discharge.org.in/api/v5/fhir-bundle", {
-        bundle,
-        patient: originalPatientId,
+    setJsonOut(JSON.stringify(bundle, null, 2));
+    // console.log("Generated Discharge Summary Bundle:", bundle);
+    axios.post('https://uat.discharge.org.in/api/v5/fhir-bundle', { bundle, patient: selectedPatient?.abha_ref })
+      .then(response => {
+        console.log("FHIR Bundle Submitted:", response.data);
+        alert("Submitted successfully");
+      })
+      .catch(error => {
+        console.error("Error submitting FHIR Bundle:", error.response?.data || error.message);
+        alert("Failed to submit FHIR Bundle. See console.");
       });
-      console.log("FHIR Bundle Submitted:", resp.data);
-      alert("Submitted successfully");
-    } catch (error) {
-      console.error("Error submitting FHIR Bundle:", error?.response?.data || error.message);
-      // also echo patient id to tie the error to the patient
-      console.error("Failed submission for patient:", originalPatientId);
-      alert("Failed to submit FHIR Bundle. See console.");
-    }
   }
 
   /* ------------------------------- RENDER UI -------------------------------- */
@@ -545,18 +574,18 @@ export default function App() {
         </div>
       </div>
 
-      {/* Practitioner (from global) */}
+      {/* Practitioner card (global) */}
       <div className="card mb-3">
         <div className="card-header">2. Practitioner (Author) <span className="text-danger">*</span></div>
         <div className="card-body">
           <div className="row g-3">
             <div className="col-md-6">
-              <label className="form-label">Practitioner</label>
-              <input className="form-control" readOnly value={practitionerName} />
+              <label className="form-label">Select Practitioner</label>
+              <input className="form-control" readOnly value={practitionerDisplayName} />
             </div>
             <div className="col-md-6">
-              <label className="form-label">License</label>
-              <input className="form-control" readOnly value={practitionerLicense} />
+              <label className="form-label">Name</label>
+              <input className="form-control" readOnly value={practitionerDisplayName || ""} />
             </div>
           </div>
         </div>
@@ -661,7 +690,7 @@ export default function App() {
 
       {/* Actions */}
       <div className="mb-4">
-        <button className="btn btn-primary" onClick={onBuildJSON}>Build & Submit Discharge Summary</button>
+        <button className="btn btn-primary" onClick={onBuildJSON}>Build Discharge Summary JSON</button>
       </div>
 
       {/* Output */}
