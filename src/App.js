@@ -140,6 +140,32 @@ function normalizeAbhaAddresses(patientObj) {
   return out;
 }
 
+function buildCustodianOrg(orgId) {
+  return {
+    resourceType: "Organization",
+    id: orgId,
+    language: "en-IN",
+    meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Organization"] },
+    // text: buildNarrative("Organization", "<p>Custodian HIP</p>"),
+    name: "Your Hospital Name", // replace with your org name
+    identifier: [{
+      system: "https://facility.ndhm.gov.in",
+      value: "HIP123456", // replace with your HIP code
+      type: {
+        coding: [{
+          system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+          code: "XX",
+          display: "Organization identifier"
+        }],
+        text: "HIP code"
+      }
+    }]
+  };
+}
+
+
+
+
 /* ------------------------------- APP COMPONENT ------------------------------ */
 export default function App() {
   /* Patients (from public/patients.json) */
@@ -185,6 +211,7 @@ export default function App() {
 
   /* File upload */
   const fileInputRef = useRef(null);
+  const orgId = uuidv4()
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadPreviewName, setUploadPreviewName] = useState("");
 
@@ -273,7 +300,18 @@ export default function App() {
   function buildPatientResource(patId) {
     if (!selectedPatient) return null;
     const identifiers = [];
-    if (selectedPatient.abha_ref) identifiers.push({ system: "https://healthid.ndhm.gov.in", value: selectedPatient.abha_ref });
+    if (selectedPatient.abha_ref) identifiers.push({
+      system: "https://healthid.ndhm.gov.in",
+      value: selectedPatient.abha_ref,
+      type: {
+        coding: [{
+          system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+          code: "SB",
+          display: "Social Beneficiary Identifier"
+        }],
+        text: "ABHA Number"
+      }
+    });
 
     const telecom = [];
     if (selectedPatient.mobile) telecom.push({ system: "phone", value: selectedPatient.mobile });
@@ -285,13 +323,29 @@ export default function App() {
       id: patId,
       language: "en-IN",
       // text: buildNarrative("Patient", `<p>${selectedPatient.name}</p><p>${selectedPatient.gender || ""} ${selectedPatient.dob || ""}</p>`),
-      identifier: identifiers,
+      // identifier: identifiers,
+      identifier: [
+        ...identifiers,
+        ...(selectedAbha ? [{
+          system: "https://healthid.abdm.gov.in/address",
+          value: selectedAbha,
+          type: {
+            coding: [{
+              system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+              code: "AN",
+              display: "Account number"
+            }],
+            text: "ABHA Address"
+          }
+
+        }] : [])
+      ],
       name: [{ text: selectedPatient.name }],
       gender: (selectedPatient.gender || "").toLowerCase(),
       birthDate: toFHIRDateFromDDMMYYYY(selectedPatient.dob) || undefined,
       telecom,
       address: selectedPatient.address ? [{ text: selectedPatient.address }] : undefined,
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Patient"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Patient"] },
     };
   }
 
@@ -301,9 +355,23 @@ export default function App() {
       id: pracId,
       language: "en-IN",
       // text: buildNarrative("Practitioner", `<p>${practitionerName}</p>`),
-      identifier: practitionerLicense ? [{ system: "https://doctor.ndhm.gov.in", value: practitionerLicense }] : undefined,
+      // identifier: practitionerLicense ? [{ system: "https://doctor.ndhm.gov.in", value: practitionerLicense }] : undefined,
+      // name: [{ text: practitionerName }],
+      // meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Practitioner"] },
+      identifier: [{
+        type: {
+          coding: [{
+            system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+            code: "MD",
+            display: "Medical License number"
+          }]
+        },
+        system: "https://doctor.ndhm.gov.in",
+        value: practitionerLicense
+      }],
       name: [{ text: practitionerName }],
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Practitioner"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Practitioner"] },
+
     };
   }
 
@@ -321,9 +389,9 @@ export default function App() {
         code: "AMB",
         display: "ambulatory",
       },
-      subject: { reference: `urn:uuid:${patId}` },
+      subject: { reference: `urn:uuid:${patId}`, type: "Patient" },
       period: { start, end },
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Encounter"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/Encounter"] },
     };
   }
 
@@ -336,11 +404,11 @@ export default function App() {
       status: "active",
       intent: "order",
       medicationCodeableConcept: m.medicationText?.trim() ? { text: m.medicationText.trim() } : { text: "Medication" },
-      subject: { reference: `urn:uuid:${patId}` },
+      subject: { reference: `urn:uuid:${patId}`, type: "Patient" },
       authoredOn,
       requester: { reference: `urn:uuid:${pracId}`, display: practitionerName },
       dosageInstruction: [{ text: m.dosageText || "One tablet twice a day after meal" }],
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/MedicationRequest"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/MedicationRequest"] },
     }));
   }
 
@@ -353,10 +421,10 @@ export default function App() {
       // text: buildNarrative("CarePlan", `<p>${carePlanText}</p>`),
       status: "active",
       intent: "plan",
-      subject: { reference: `urn:uuid:${patId}` },
+      subject: { reference: `urn:uuid:${patId}`, type: "Patient" },
       author: [{ reference: `urn:uuid:${pracId}` }],
       activity: [{ detail: { kind: "ServiceRequest", description: carePlanText } }],
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/CarePlan"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/CarePlan"] },
     };
   }
 
@@ -385,16 +453,21 @@ export default function App() {
       // text: buildNarrative("DocumentReference", `<p>Discharge document</p>`),
       status: "current",
       type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" },
-      subject: { reference: `urn:uuid:${patId}` },
+      subject: { reference: `urn:uuid:${patId}`, type: "Patient" },
       date: nowISOWithOffset(),
-      content: [{ attachment: { contentType, url: `urn:uuid:${binaryId}` } }],
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/DocumentReference"] },
+      content: [{
+        attachment: {
+          contentType, url: `urn:uuid:${binaryId}`,
+          data: dataB64 // 🔹 must be present
+        }
+      }],
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/DocumentReference"] },
     };
 
     return { binary, docRef };
   }
 
-  function buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlan, docRef) {
+  function buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlan, docRef, orgId) {
     function makeSection(title, coding, textValue, entryRefs) {
       const sec = {
         title,
@@ -430,13 +503,15 @@ export default function App() {
       // text: buildNarrative("Composition", `<p>${docTitle}</p>`),
       status: docStatus,
       type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" },
-      subject: { reference: `urn:uuid:${patId}` },
-      encounter: { reference: `urn:uuid:${encId}` },
+      custodian: { reference: `urn:uuid:${orgId}` },
+      subject: { reference: `urn:uuid:${patId}`, type: "Patient" },
+      encounter: { reference: `urn:uuid:${encId}`, type: "Encounter" },
       date: authoredOn,
       author: [{ reference: `urn:uuid:${pracId}`, display: practitionerName }],
       title: docTitle,
+      custodian: { reference: `urn:uuid:${orgId}` },
       section: sections,
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Composition"] },
+      meta: { profile: ["https://nrces.in/ndhm/fhir/r4/StructureDefinition/DischargeSummaryRecord"] },
     };
   }
 
@@ -469,14 +544,20 @@ export default function App() {
     const encounterRes = buildEncounterResource(encId, patId);
     const medReqs = buildMedicationRequests(medReqIds, patId, pracId, authoredOn);
     const carePlanRes = carePlanId ? buildCarePlanResource(carePlanId, patId, pracId) : null;
+    // const { binary, docRef } = await buildBinaryAndDocRef(binaryId, docRefId, patId);
+    // const composition = buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlanRes, docRef);
+    const custodianId = uuidv4();
+    const custodianRes = buildCustodianOrg(orgId);
     const { binary, docRef } = await buildBinaryAndDocRef(binaryId, docRefId, patId);
-    const composition = buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlanRes, docRef);
+    const composition = buildComposition(compId, patId, encId, pracId, authoredOn, medReqs, carePlanRes, docRef, orgId);
+
+
 
     // Assemble document Bundle (ensure Composition is first)
     const bundle = {
       resourceType: "Bundle",
       id: bundleId,
-      meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Bundle"], lastUpdated: authoredOn },
+      meta: { lastUpdated: authoredOn },
       identifier: { system: "urn:ietf:rfc:3986", value: `urn:uuid:${uuidv4()}` },
       type: "document",
       timestamp: authoredOn,
@@ -489,6 +570,7 @@ export default function App() {
         ...(carePlanRes ? [{ fullUrl: `urn:uuid:${carePlanId}`, resource: carePlanRes }] : []),
         { fullUrl: `urn:uuid:${docRefId}`, resource: docRef },
         { fullUrl: `urn:uuid:${binaryId}`, resource: binary },
+        { fullUrl: `urn:uuid:${orgId}`, resource: custodianRes },
       ],
     };
 
@@ -527,7 +609,7 @@ export default function App() {
               <label className="form-label">Select Patient</label>
               <select className="form-select" value={selectedPatientIdx} onChange={e => setSelectedPatientIdx(Number(e.target.value))}>
                 {patients.map((p, i) => (
-                  <option key={p.id || i} value={i}>
+                  <option key={p.user_id || i} value={i}>
                     {p.name} {p.abha_ref ? `(${p.abha_ref})` : ""}
                   </option>
                 ))}

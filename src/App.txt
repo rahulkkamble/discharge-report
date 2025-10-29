@@ -7,7 +7,7 @@ import "bootstrap/dist/css/bootstrap.min.css";
   Discharge Summary — Bootstrap UI version
   - Patient list fetched from /patients.json (public)
   - ABHA addresses normalized + dropdown
-  - Practitioner read from global window.GlobalPractitioner (FHIR Practitioner)
+  - Practitioner read from global window.GlobalPractioner (FHIR Practitioner)
   - Builds a FHIR Bundle (document) with:
     Composition + Patient + Practitioner + Encounter + MedicationRequests + DocumentReference + Binary
   - Bundle.identifier uses urn:ietf:rfc:3986 + urn:uuid:<uuid>
@@ -116,8 +116,8 @@ function normalizeAbhaAddresses(patientObj) {
     patientObj?.additional_attributes?.abha_addresses && Array.isArray(patientObj.additional_attributes.abha_addresses)
       ? patientObj.additional_attributes.abha_addresses
       : Array.isArray(patientObj?.abha_addresses)
-      ? patientObj.abha_addresses
-      : [];
+        ? patientObj.abha_addresses
+        : [];
 
   const out = raw
     .map((item) => {
@@ -150,17 +150,21 @@ export default function App() {
   const [abhaOptions, setAbhaOptions] = useState([]);
   const [selectedAbha, setSelectedAbha] = useState("");
 
-  /* Practitioner from global window.GlobalPractitioner (FHIR Practitioner) */
-  const gp = (typeof window !== "undefined" && (window.GlobalPractitioner || window.GlobalPractitionerFHIR)) || null;
+  /* Practitioner from global window.GlobalPractioner (FHIR Practitioner) */
+  const gp =
+    (typeof window !== "undefined" &&
+      (window.GlobalPractioner || window.GlobalPractionerFHIR)) ||
+    null;
   const practitionerId = safeUuid(gp?.id); // bundle-local id must be a UUID for urn:uuid
   const practitionerName =
-    (Array.isArray(gp?.name) && gp?.name?.[0]?.text) ||
+    (Array.isArray(gp?.name) && gp?.name[0]?.text) ||
     (typeof gp?.name === "string" ? gp?.name : "") ||
     "Dr. ABC";
   const practitionerLicense =
-    (Array.isArray(gp?.identifier) && gp?.identifier?.[0]?.value) ||
+    (Array.isArray(gp?.identifier) && gp?.identifier[0]?.value) ||
     (typeof gp?.license === "string" ? gp?.license : "") ||
     "LIC-TEMP-0001";
+
 
   /* Composition meta */
   const [docStatus, setDocStatus] = useState("final");
@@ -185,24 +189,46 @@ export default function App() {
   const [uploadPreviewName, setUploadPreviewName] = useState("");
 
   /* Output JSON */
-  const [jsonOut, setJsonOut] = useState("");
+  // const [jsonOut, setJsonOut] = useState("");
 
   /* Fetch patients on mount */
+  /* Fetch patients on mount: API first, fallback to local patients.json */
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/patients.json");
-        const data = await res.json();
-        const arr = Array.isArray(data) ? data : [];
-        setPatients(arr);
-        if (arr.length > 0) {
-          setSelectedPatientIdx(0);
-          const abhas = normalizeAbhaAddresses(arr[0]);
-          setAbhaOptions(abhas);
-          setSelectedAbha(abhas.length ? abhas[0].value : "");
+        // 🔹 Try live API first
+        const apiRes = await fetch(window.GlobalPatientAPI || "/api/v5/patients", {
+          headers: {
+            "Content-Type": "application/json",
+            ...(window.GlobalAuthToken ? { "Authorization": `Bearer ${window.GlobalAuthToken}` } : {})
+          }
+        });
+        if (!apiRes.ok) throw new Error("API fetch failed");
+        const apiData = await apiRes.json();
+        if (!Array.isArray(apiData) || apiData.length === 0) throw new Error("API returned empty");
+
+        setPatients(apiData);
+        setSelectedPatientIdx(0);
+        const first = apiData[0];
+        const abhas = normalizeAbhaAddresses(first);
+        setAbhaOptions(abhas);
+        setSelectedAbha(abhas.length ? abhas[0].value : "");
+      } catch (apiErr) {
+        console.warn("⚠️ API fetch failed, falling back to local patients.json", apiErr);
+        try {
+          const localRes = await fetch("/patients.json");
+          const localData = await localRes.json();
+          const arr = Array.isArray(localData) ? localData : [];
+          setPatients(arr);
+          if (arr.length > 0) {
+            setSelectedPatientIdx(0);
+            const abhas = normalizeAbhaAddresses(arr[0]);
+            setAbhaOptions(abhas);
+            setSelectedAbha(abhas.length ? abhas[0].value : "");
+          }
+        } catch (localErr) {
+          console.error("Failed to fetch local patients.json:", localErr);
         }
-      } catch (e) {
-        console.error("Failed to load patients.json", e);
       }
     })();
   }, []);
@@ -258,7 +284,7 @@ export default function App() {
       resourceType: "Patient",
       id: patId,
       language: "en-IN",
-      text: buildNarrative("Patient", `<p>${selectedPatient.name}</p><p>${selectedPatient.gender || ""} ${selectedPatient.dob || ""}</p>`),
+      // text: buildNarrative("Patient", `<p>${selectedPatient.name}</p><p>${selectedPatient.gender || ""} ${selectedPatient.dob || ""}</p>`),
       identifier: identifiers,
       name: [{ text: selectedPatient.name }],
       gender: (selectedPatient.gender || "").toLowerCase(),
@@ -274,7 +300,7 @@ export default function App() {
       resourceType: "Practitioner",
       id: pracId,
       language: "en-IN",
-      text: buildNarrative("Practitioner", `<p>${practitionerName}</p>`),
+      // text: buildNarrative("Practitioner", `<p>${practitionerName}</p>`),
       identifier: practitionerLicense ? [{ system: "https://doctor.ndhm.gov.in", value: practitionerLicense }] : undefined,
       name: [{ text: practitionerName }],
       meta: { profile: ["http://hl7.org/fhir/StructureDefinition/Practitioner"] },
@@ -288,7 +314,7 @@ export default function App() {
       resourceType: "Encounter",
       id: encId,
       language: "en-IN",
-      text: buildNarrative("Encounter", "<p>Encounter for discharge</p>"),
+      // text: buildNarrative("Encounter", "<p>Encounter for discharge</p>"),
       status: "finished",
       class: {
         system: "http://terminology.hl7.org/CodeSystem/v3-ActCode",
@@ -306,7 +332,7 @@ export default function App() {
       resourceType: "MedicationRequest",
       id: medReqIds[idx],
       language: "en-IN",
-      text: buildNarrative("MedicationRequest", `<p>${m.medicationText || ""}</p>`),
+      // text: buildNarrative("MedicationRequest", `<p>${m.medicationText || ""}</p>`),
       status: "active",
       intent: "order",
       medicationCodeableConcept: m.medicationText?.trim() ? { text: m.medicationText.trim() } : { text: "Medication" },
@@ -324,7 +350,7 @@ export default function App() {
       resourceType: "CarePlan",
       id: carePlanId,
       language: "en-IN",
-      text: buildNarrative("CarePlan", `<p>${carePlanText}</p>`),
+      // text: buildNarrative("CarePlan", `<p>${carePlanText}</p>`),
       status: "active",
       intent: "plan",
       subject: { reference: `urn:uuid:${patId}` },
@@ -356,7 +382,7 @@ export default function App() {
       resourceType: "DocumentReference",
       id: docRefId,
       language: "en-IN",
-      text: buildNarrative("DocumentReference", `<p>Discharge document</p>`),
+      // text: buildNarrative("DocumentReference", `<p>Discharge document</p>`),
       status: "current",
       type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" },
       subject: { reference: `urn:uuid:${patId}` },
@@ -401,7 +427,7 @@ export default function App() {
       resourceType: "Composition",
       id: compId,
       language: "en-IN",
-      text: buildNarrative("Composition", `<p>${docTitle}</p>`),
+      // text: buildNarrative("Composition", `<p>${docTitle}</p>`),
       status: docStatus,
       type: { coding: [SNOMED.DOC_TYPE], text: "Discharge summary" },
       subject: { reference: `urn:uuid:${patId}` },
@@ -422,7 +448,7 @@ export default function App() {
     }
 
     const authoredOn = nowISOWithOffset();
-    const originalPatientId = String(selectedPatient?.id || "");
+    const originalPatientId = Number(selectedPatient?.user_id || "");
     console.log("Submitting for patient:", originalPatientId);
 
     // Generate UUIDs for all bundle-local resources
@@ -468,7 +494,7 @@ export default function App() {
 
     // Output valid JSON for validator
     const json = JSON.stringify(bundle, null, 2);
-    setJsonOut(json);
+    // setJsonOut(json);
     console.log("Generated Discharge Summary Bundle:", bundle);
 
     // Submit bundle with original patient id; log error details in console
@@ -664,13 +690,6 @@ export default function App() {
         <button className="btn btn-primary" onClick={onBuildJSON}>Build & Submit Discharge Summary</button>
       </div>
 
-      {/* Output */}
-      <div className="card mb-5">
-        <div className="card-header">Output JSON</div>
-        <div className="card-body">
-          <textarea className="form-control" rows={18} value={jsonOut} onChange={e => setJsonOut(e.target.value)} />
-        </div>
-      </div>
     </div>
   );
 }
